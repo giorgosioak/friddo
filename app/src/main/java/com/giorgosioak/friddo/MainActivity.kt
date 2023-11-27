@@ -53,6 +53,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import com.giorgosioak.friddo.ui.theme.FriddoTheme
+import com.giorgosioak.friddo.ToolBox.Companion.isFridaServerRunning
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -173,11 +174,15 @@ fun FridaStatusCard() {
                 }
                 Column {
                     Text(text = "16.1.4 (arm64)", color = MaterialTheme.colorScheme.tertiary)
-                    val active = Text(text = "Active", color = MaterialTheme.colorScheme.tertiary)
+                    val active = Text(text = getServerStatus(), color = MaterialTheme.colorScheme.tertiary)
                 }
             }
         }
     }
+}
+
+fun getServerStatus() : String {
+    return if (isFridaServerRunning()) "Active" else "Inactive"
 }
 
 @Preview(showBackground = true)
