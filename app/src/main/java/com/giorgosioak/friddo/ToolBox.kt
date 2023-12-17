@@ -1,8 +1,9 @@
 package com.giorgosioak.friddo
 
+import com.giorgosioak.friddo.model.Release
 import java.io.BufferedReader
-import java.io.IOException
 import java.io.InputStreamReader
+
 
 class ToolBox {
 
@@ -25,5 +26,11 @@ class ToolBox {
             return false
         }
 
+    }
+
+    fun getReleasesFromGithubApi(): Array<Release> {
+        var releases: Array<Release> = emptyArray()
+
+        return releases;
     }
 }
