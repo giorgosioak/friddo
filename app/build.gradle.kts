@@ -32,7 +32,7 @@ android {
     signingConfigs {
         if (hasReleaseSigning) {
             create("release") {
-                storeFile = file(requireNotNull(releaseStoreFile))
+                storeFile = rootProject.file(requireNotNull(releaseStoreFile))
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
                 keyPassword = releaseKeyPassword
