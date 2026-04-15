@@ -95,6 +95,13 @@ class VersionRepository(private val context: Context) {
         } ?: emptyList()
     }
 
+    fun deleteFridaServer(): Boolean {
+        val file = File(context.filesDir.resolve("friddo"), "frida-server")
+        return if (file.exists()) {
+            file.delete()
+        } else false
+    }
+
     // RENAMED function to convert system ABI to Frida's asset naming format
     fun getFridaAbiFormat(abi: String): String {
         // normalize to commonly used suffixes in frida assets

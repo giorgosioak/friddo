@@ -41,6 +41,9 @@ import androidx.compose.ui.unit.dp
 import com.giorgosioak.friddo.data.repository.InstalledVersion
 import com.giorgosioak.friddo.data.repository.RemoteRelease
 import com.giorgosioak.friddo.data.repository.VersionRepository
+import com.giorgosioak.friddo.service.ServerState
+import com.giorgosioak.friddo.service.ServerStateManager
+import com.giorgosioak.friddo.service.ServerStateManager.serverDetails
 import com.giorgosioak.friddo.utils.rememberConnectivityState
 import kotlinx.coroutines.launch
 import java.time.ZonedDateTime
@@ -92,6 +95,7 @@ fun VersionsScreen() {
     var isFetchingReleases by remember { mutableStateOf(false) }
     var activeTag by remember { mutableStateOf<String?>(null) }
     var selectedReleaseForDownload by remember { mutableStateOf<RemoteRelease?>(null) }
+    val serverState by ServerStateManager.serverState.collectAsState()
 
     var abiOverride by remember { mutableStateOf("") }
     var abiDropdownExpanded by remember { mutableStateOf(false) }
@@ -99,6 +103,7 @@ fun VersionsScreen() {
 
     // State for delete confirmation
     var versionToDelete by remember { mutableStateOf<InstalledVersion?>(null) }
+    var showServerRunningDeleteBlocked by remember { mutableStateOf(false) }
 
     val sheetState = rememberModalBottomSheetState()
     var showReleasesSheet by remember { mutableStateOf(false) }
@@ -450,7 +455,17 @@ fun VersionsScreen() {
                                 }
                             },
                             onDelete = {
-                                versionToDelete = version
+                                val details = serverDetails.value
+                                val isActuallyRunning = details != null &&
+                                        details.version == version.tag &&
+                                        details.arch == version.arch
+                                val isServerBusy = serverState == ServerState.RUNNING || serverState == ServerState.STARTING
+
+                                if (isActuallyRunning && isServerBusy) {
+                                    showServerRunningDeleteBlocked = true
+                                } else {
+                                    versionToDelete = version
+                                }
                             }
                         )
 
@@ -531,8 +546,29 @@ fun VersionsScreen() {
             }
         }
     }
-
     // --- Delete Confirmation Dialog ---
+    if (showServerRunningDeleteBlocked) {
+        AlertDialog(
+            onDismissRequest = { showServerRunningDeleteBlocked = false },
+            title = { Text("Version in Use") },
+            text = {
+                val runningVersion = serverDetails.value?.version ?: "Unknown"
+                val runningArch = serverDetails.value?.arch ?: "Unknown"
+                Text(
+                    text = "You are trying to delete Frida $runningVersion ($runningArch).\n\n" +
+                            "This specific version is currently executing as a system process. " +
+                            "To uninstall it, you must stop the server first.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showServerRunningDeleteBlocked = false }) {
+                    Text("Got it")
+                }
+            }
+        )
+    }
+
     versionToDelete?.let { version ->
         AlertDialog(
             onDismissRequest = { versionToDelete = null },
@@ -544,11 +580,10 @@ fun VersionsScreen() {
                         scope.launch {
                             if (repo.deleteInstalled(version)) {
                                 refreshInstalled()
-                                val bundle = android.os.Bundle().apply {
-                                    putString("version_tag", version.tag)
-                                    putString("version_arch", version.arch)
-                                }
                                 Toast.makeText(context, "Deleted ${version.tag}", Toast.LENGTH_SHORT).show()
+                            }
+                            if (installed.size == 1) {
+                                repo.deleteFridaServer()
                             }
                             versionToDelete = null
                         }
