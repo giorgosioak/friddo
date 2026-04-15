@@ -11,6 +11,20 @@ Friddo is an Android utility for managing and running `frida-server` on rooted d
 - Start, stop, and restart the local Frida server
 - View basic logs and active hooked sessions
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="Friddo dashboard screen" width="30%" />
+  <img src="docs/screenshots/version_install.png" alt="Friddo versions screen" width="30%" />
+  <img src="docs/screenshots/settings.png" alt="Friddo settings screen" width="30%" />
+</p>
+
+Screens shown above:
+
+- Dashboard
+- Version install flow
+- Settings
+
 ## Requirements
 
 - Android 11 or newer
