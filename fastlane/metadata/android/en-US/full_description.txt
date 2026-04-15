@@ -1,0 +1,18 @@
+Friddo helps advanced Android users manage Frida server binaries on rooted devices.
+
+Features:
+
+- View available upstream Frida releases
+- Cache release metadata locally
+- Download compatible frida-server builds
+- Switch between installed versions
+- Start, stop, and restart the local Frida server
+- View local status and logs
+
+Friddo is designed for reverse engineering, testing, and security research workflows.
+
+Important notes:
+
+- Root access is required
+- The app downloads frida-server from the upstream Frida project when requested by the user
+- The app is intended for advanced users who understand the implications of root and dynamic instrumentation
