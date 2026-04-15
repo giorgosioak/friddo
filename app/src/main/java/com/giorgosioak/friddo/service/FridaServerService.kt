@@ -71,7 +71,7 @@ class FridaServerService() : LifecycleService() {
         lifecycleScope.launch {
             val prefs = settingsDataStore.data.first()
 
-            val binaryPath = prefs[PreferencesKeys.Settings.BINARY_PATH] ?: DefaultValues.binaryPath(this@FridaServerService)
+            val binaryPath = DefaultValues.binaryPath(this@FridaServerService)
             val currentAddress = prefs[PreferencesKeys.Settings.SERVER_ADDRESS] ?: DefaultValues.ADDRESS
             val currentPort = prefs[PreferencesKeys.Settings.SERVER_PORT] ?: DefaultValues.PORT
             val actionSource = intent?.getStringExtra("action_source") ?: "system"

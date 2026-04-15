@@ -15,7 +15,6 @@ object PreferencesKeys {
         val LANGUAGE = stringPreferencesKey("language")
         val SERVER_ADDRESS = stringPreferencesKey("listen_address")
         val SERVER_PORT = stringPreferencesKey("listen_port")
-        val BINARY_PATH = stringPreferencesKey("binary_path")
         val ACTIVE_FRIDA_VERSION = stringPreferencesKey("active_frida_version")
         val FIRST_LAUNCH = booleanPreferencesKey("is_first_launch")
     }

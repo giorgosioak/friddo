@@ -56,7 +56,6 @@ fun SettingsScreen() {
     val dataStore = context.settingsDataStore
     val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
     val appVersion = packageInfo.versionName ?: "Unknown"
-    val defaultPath = remember(context) { DefaultValues.binaryPath(context) }
     val uriHandler = LocalUriHandler.current
 
     val settings by remember {
@@ -67,11 +66,10 @@ fun SettingsScreen() {
                 theme = prefs[PreferencesKeys.Settings.THEME] ?: DefaultValues.THEME,
                 language = prefs[PreferencesKeys.Settings.LANGUAGE] ?: DefaultValues.LANGUAGE,
                 listenAddress = prefs[PreferencesKeys.Settings.SERVER_ADDRESS] ?: DefaultValues.ADDRESS,
-                port = prefs[PreferencesKeys.Settings.SERVER_PORT] ?: DefaultValues.PORT,
-                binaryPath = prefs[PreferencesKeys.Settings.BINARY_PATH] ?: defaultPath
+                port = prefs[PreferencesKeys.Settings.SERVER_PORT] ?: DefaultValues.PORT
             )
         }
-    }.collectAsState(initial = SettingsState(binaryPath = defaultPath))
+    }.collectAsState(initial = SettingsState())
 
     Column(
         modifier = Modifier
@@ -127,18 +125,6 @@ fun SettingsScreen() {
                 keyboardType = KeyboardType.Number,
                 onValueChange = { newValue ->
                     scope.launch { dataStore.edit { it[PreferencesKeys.Settings.SERVER_PORT] = newValue } }
-                }
-            )
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), thickness = 0.5.dp)
-
-            // Binary Path Setting
-            SettingTextFieldItem(
-                title = "Binary Path",
-                subtitle = "The absolute location of the frida-server executable on your device storage",
-                value = settings.binaryPath,
-                defaultValue = DefaultValues.binaryPath(context),
-                onValueChange = { newValue ->
-                    scope.launch { dataStore.edit { it[PreferencesKeys.Settings.BINARY_PATH] = newValue } }
                 }
             )
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), thickness = 0.5.dp)
@@ -634,6 +620,5 @@ private data class SettingsState(
     val theme: String = "system",
     val language: String = "system",
     val listenAddress: String = DefaultValues.ADDRESS,
-    val port: String = DefaultValues.PORT,
-    val binaryPath: String = ""
+    val port: String = DefaultValues.PORT
 )
