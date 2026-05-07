@@ -2,6 +2,7 @@ package com.giorgosioak.friddo
 
 import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -30,10 +31,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.*
 import com.giorgosioak.friddo.data.local.PreferencesKeys
+import com.giorgosioak.friddo.data.repository.VersionRepository
 import com.giorgosioak.friddo.ui.screens.settings.SettingsScreen
 import com.giorgosioak.friddo.ui.screens.logs.LogsScreen
 import com.giorgosioak.friddo.ui.screens.server.ServerScreen
@@ -41,11 +45,28 @@ import com.giorgosioak.friddo.ui.screens.versions.VersionsScreen
 import com.giorgosioak.friddo.ui.theme.FriddoTheme
 import com.giorgosioak.friddo.ui.screens.settings.settingsDataStore
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        lifecycleScope.launch {
+            VersionRepository(applicationContext).fetchReleaseCache()
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                101
+            )
+        }
+
         setContent {
             val context = LocalContext.current
 
@@ -83,14 +104,6 @@ class MainActivity : ComponentActivity() {
                 "light" -> false
                 "dark" -> true
                 else -> isSystemInDarkTheme()
-            }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    101
-                )
             }
 
             FriddoTheme(darkTheme = useDarkTheme) {

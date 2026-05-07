@@ -28,6 +28,7 @@ import kotlin.math.pow
 
 private const val TAG = "VersionRepository"
 private const val GITHUB_RELEASES_URL = "https://api.github.com/repos/frida/frida/releases"
+private const val GITHUB_RELEASES_PER_PAGE = 50
 private val RELEASES_CACHE_MAX_AGE_MS = TimeUnit.HOURS.toMillis(12)
 
 class VersionRepository(private val context: Context) {
@@ -115,48 +116,90 @@ class VersionRepository(private val context: Context) {
     }
 
     suspend fun getCachedReleases(): List<RemoteRelease> = withContext(Dispatchers.IO) {
-        readCachedReleases()?.releases ?: emptyList()
+        readCachedReleases()?.cache?.releases ?: emptyList()
+    }
+
+    suspend fun getCachedReleaseCache(): RemoteReleaseCache? = withContext(Dispatchers.IO) {
+        readCachedReleases()?.cache
     }
 
     suspend fun shouldRefreshReleaseCache(maxAgeMs: Long = RELEASES_CACHE_MAX_AGE_MS): Boolean =
         withContext(Dispatchers.IO) {
             val cache = readCachedReleases() ?: return@withContext true
-            System.currentTimeMillis() - cache.fetchedAt >= maxAgeMs
+            !cache.hasPaginationMetadata ||
+                    System.currentTimeMillis() - cache.cache.fetchedAt >= maxAgeMs
         }
 
-    // Fetch releases from GitHub, using disk cache unless a refresh is forced.
+    // Fetch the newest GitHub releases page, using disk cache unless a refresh is forced.
     suspend fun fetchReleases(forceRefresh: Boolean = false): List<RemoteRelease> = withContext(Dispatchers.IO) {
+        fetchReleaseCache(forceRefresh).releases
+    }
+
+    suspend fun fetchReleaseCache(forceRefresh: Boolean = false): RemoteReleaseCache = withContext(Dispatchers.IO) {
         val cached = readCachedReleases()
 
-        if (!forceRefresh && cached != null) {
-            val cacheAge = System.currentTimeMillis() - cached.fetchedAt
+        if (!forceRefresh && cached != null && cached.hasPaginationMetadata) {
+            val cacheAge = System.currentTimeMillis() - cached.cache.fetchedAt
             if (cacheAge < RELEASES_CACHE_MAX_AGE_MS) {
-                return@withContext cached.releases
+                return@withContext cached.cache
             }
         }
 
-        val freshReleases = fetchReleasesFromNetwork()
-        if (freshReleases.isNotEmpty()) {
-            writeCachedReleases(freshReleases)
-            return@withContext freshReleases
+        val firstPage = fetchReleasesFromNetwork(page = 1)
+        if (firstPage != null) {
+            val freshCache = firstPage.toCache()
+            writeCachedReleases(freshCache)
+            return@withContext freshCache
         }
 
-        cached?.releases ?: emptyList()
+        cached?.cache ?: emptyReleaseCache()
     }
 
-    private fun fetchReleasesFromNetwork(): List<RemoteRelease> {
+    suspend fun fetchNextReleasePage(): RemoteReleaseCache = withContext(Dispatchers.IO) {
+        val cached = readCachedReleases()?.cache
+        val current = cached ?: RemoteReleaseCache(
+            fetchedAt = 0L,
+            releases = emptyList(),
+            nextPage = 1,
+            nextUrl = null,
+            hasMore = true
+        )
+
+        if (!current.hasMore) {
+            return@withContext current
+        }
+
+        val page = current.nextPage ?: current.nextUrl?.let(::pageFromUrl) ?: 1
+        val nextPage = fetchReleasesFromNetwork(page = page, url = current.nextUrl)
+            ?: return@withContext current
+
+        val updatedCache = RemoteReleaseCache(
+            fetchedAt = System.currentTimeMillis(),
+            releases = dedupeReleasesByTag(current.releases + nextPage.releases),
+            nextPage = nextPage.nextPage,
+            nextUrl = nextPage.nextUrl,
+            hasMore = nextPage.hasMore
+        )
+        writeCachedReleases(updatedCache)
+        updatedCache
+    }
+
+    private fun fetchReleasesFromNetwork(page: Int, url: String? = null): ReleaseNetworkPage? {
         return try {
             val req = Request.Builder()
-                .url(GITHUB_RELEASES_URL)
+                .url(url ?: releasesPageUrl(page))
                 .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "Friddo-App")
                 .build()
             http.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@use emptyList()
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "GitHub releases request failed: HTTP ${resp.code}")
+                    return@use null
+                }
                 val body = resp.body.string()
                 val arr = JSONArray(body)
 
-                (0 until arr.length()).map { i ->
+                val releases = (0 until arr.length()).mapNotNull { i ->
                     val o = arr.getJSONObject(i)
                     val tag = o.getString("tag_name")
                     val assetsJson = o.optJSONArray("assets")
@@ -173,18 +216,27 @@ class VersionRepository(private val context: Context) {
                         }
                     }
 
-                    RemoteRelease(
+                    val release = RemoteRelease(
                         tag = tag,
                         name = o.optString("name", tag),
                         publishedAt = o.optString("published_at", ""),
                         changelog = o.optString("body", ""),
                         assets = assets
                     )
+                    release.takeIf { it.hasAndroidServerAsset() }
                 }
+
+                val nextUrl = nextUrlFromLinkHeader(resp.header("Link"))
+                ReleaseNetworkPage(
+                    releases = releases,
+                    nextPage = nextUrl?.let(::pageFromUrl) ?: nextUrl?.let { page + 1 },
+                    nextUrl = nextUrl,
+                    hasMore = nextUrl != null
+                )
             }
         } catch (t: Throwable) {
             Log.e(TAG, "fetchReleases failed", t)
-            emptyList()
+            null
         }
     }
 
@@ -196,6 +248,8 @@ class VersionRepository(private val context: Context) {
             val json = JSONObject(cacheFile.readText())
             val fetchedAt = json.optLong("fetchedAt", 0L)
             val releasesJson = json.optJSONArray("releases") ?: JSONArray()
+            val hasPaginationMetadata =
+                json.has("nextPage") || json.has("nextUrl") || json.has("hasMore")
 
             val releases = (0 until releasesJson.length()).map { i ->
                 val releaseJson = releasesJson.getJSONObject(i)
@@ -219,9 +273,32 @@ class VersionRepository(private val context: Context) {
                 )
             }
 
+            val nextUrl = if (json.has("nextUrl") && !json.isNull("nextUrl")) {
+                json.optString("nextUrl").takeIf { it.isNotBlank() }
+            } else {
+                null
+            }
+            val nextPage = when {
+                json.has("nextPage") && !json.isNull("nextPage") -> json.optInt("nextPage")
+                nextUrl != null -> pageFromUrl(nextUrl)
+                !hasPaginationMetadata && releases.isNotEmpty() -> 1
+                else -> null
+            }
+            val hasMore = if (json.has("hasMore")) {
+                json.optBoolean("hasMore", nextPage != null || nextUrl != null)
+            } else {
+                releases.isNotEmpty()
+            }
+
             CachedRemoteReleases(
-                fetchedAt = fetchedAt,
-                releases = releases
+                cache = RemoteReleaseCache(
+                    fetchedAt = fetchedAt,
+                    releases = releases,
+                    nextPage = nextPage,
+                    nextUrl = nextUrl,
+                    hasMore = hasMore
+                ),
+                hasPaginationMetadata = hasPaginationMetadata
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to read releases cache", e)
@@ -229,10 +306,10 @@ class VersionRepository(private val context: Context) {
         }
     }
 
-    private fun writeCachedReleases(releases: List<RemoteRelease>) {
+    private fun writeCachedReleases(cache: RemoteReleaseCache) {
         try {
             val releasesJson = JSONArray()
-            releases.forEach { release ->
+            cache.releases.forEach { release ->
                 val assetsJson = JSONArray()
                 release.assets.forEach { asset ->
                     assetsJson.put(
@@ -257,13 +334,52 @@ class VersionRepository(private val context: Context) {
 
             releasesCacheFile().writeText(
                 JSONObject().apply {
-                    put("fetchedAt", System.currentTimeMillis())
+                    put("fetchedAt", cache.fetchedAt)
                     put("releases", releasesJson)
+                    put("nextPage", cache.nextPage ?: JSONObject.NULL)
+                    put("nextUrl", cache.nextUrl ?: JSONObject.NULL)
+                    put("hasMore", cache.hasMore)
                 }.toString()
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write releases cache", e)
         }
+    }
+
+    private fun emptyReleaseCache() = RemoteReleaseCache(
+        fetchedAt = 0L,
+        releases = emptyList(),
+        nextPage = null,
+        nextUrl = null,
+        hasMore = false
+    )
+
+    private fun releasesPageUrl(page: Int): String =
+        "$GITHUB_RELEASES_URL?per_page=$GITHUB_RELEASES_PER_PAGE&page=$page"
+
+    private fun nextUrlFromLinkHeader(linkHeader: String?): String? {
+        if (linkHeader.isNullOrBlank()) return null
+
+        return linkHeader.split(",")
+            .firstOrNull { part -> part.substringAfter(";").contains("rel=\"next\"") }
+            ?.substringBefore(";")
+            ?.trim()
+            ?.removePrefix("<")
+            ?.removeSuffix(">")
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun pageFromUrl(url: String): Int? =
+        Regex("[?&]page=(\\d+)").find(url)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+    private fun dedupeReleasesByTag(releases: List<RemoteRelease>): List<RemoteRelease> {
+        val byTag = LinkedHashMap<String, RemoteRelease>()
+        releases.forEach { release ->
+            if (!byTag.containsKey(release.tag)) {
+                byTag[release.tag] = release
+            }
+        }
+        return byTag.values.toList()
     }
 
     /**
@@ -275,13 +391,7 @@ class VersionRepository(private val context: Context) {
             try {
                 val fridaAbi = getFridaAbiFormat(desiredAbi)
 
-                val asset = release.assets.find { asset ->
-                    val name = asset.name.lowercase()
-                    name.contains("frida-server") &&
-                            name.contains("android") &&
-                            name.contains(fridaAbi) &&
-                            name.endsWith(".xz")
-                } ?: return@withContext null
+                val asset = release.androidServerAssetFor(fridaAbi) ?: return@withContext null
 
                 // Folder is now version-arch (e.g., 17.8.1-arm64)
                 val versionDir = File(defaultBinsDir(), "${release.tag}-$fridaAbi")
@@ -461,6 +571,12 @@ data class RemoteRelease(
     val changelog: String,
     val assets: List<ReleaseAsset>
 ) {
+    fun androidServerAssetFor(fridaAbi: String): ReleaseAsset? =
+        assets.find { it.isAndroidServerAssetFor(fridaAbi) }
+
+    fun hasAndroidServerAsset(): Boolean =
+        assets.any { it.isAndroidServerAsset() }
+
     // Returns: 2023-09-05
     val publishedAtISO: String
         get() = publishedAt.substringBefore("T").ifEmpty { "Unknown" }
@@ -482,16 +598,52 @@ data class RemoteRelease(
         }
 }
 
-private data class CachedRemoteReleases(
+data class RemoteReleaseCache(
     val fetchedAt: Long,
-    val releases: List<RemoteRelease>
+    val releases: List<RemoteRelease>,
+    val nextPage: Int?,
+    val nextUrl: String?,
+    val hasMore: Boolean
 )
+
+private data class CachedRemoteReleases(
+    val cache: RemoteReleaseCache,
+    val hasPaginationMetadata: Boolean
+)
+
+private data class ReleaseNetworkPage(
+    val releases: List<RemoteRelease>,
+    val nextPage: Int?,
+    val nextUrl: String?,
+    val hasMore: Boolean
+) {
+    fun toCache() = RemoteReleaseCache(
+        fetchedAt = System.currentTimeMillis(),
+        releases = releases,
+        nextPage = nextPage,
+        nextUrl = nextUrl,
+        hasMore = hasMore
+    )
+}
 
 data class ReleaseAsset(
     val name: String,
     val url: String,
     val size: Long
 ) {
+    fun isAndroidServerAsset(): Boolean {
+        val lowerName = name.lowercase()
+        return lowerName.contains("frida-server") &&
+                lowerName.contains("android") &&
+                lowerName.endsWith(".xz")
+    }
+
+    fun isAndroidServerAssetFor(fridaAbi: String): Boolean {
+        val lowerName = name.lowercase()
+        return isAndroidServerAsset() &&
+                lowerName.endsWith("android-${fridaAbi.lowercase()}.xz")
+    }
+
     // Returns: 14.9 MB
     val formattedSize: String
         get() {

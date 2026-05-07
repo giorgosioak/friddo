@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -40,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.giorgosioak.friddo.data.repository.InstalledVersion
 import com.giorgosioak.friddo.data.repository.RemoteRelease
+import com.giorgosioak.friddo.data.repository.RemoteReleaseCache
 import com.giorgosioak.friddo.data.repository.VersionRepository
 import com.giorgosioak.friddo.service.ServerState
 import com.giorgosioak.friddo.service.ServerStateManager
@@ -91,8 +93,14 @@ fun VersionsScreen() {
     var installed by remember { mutableStateOf<List<InstalledVersion>>(emptyList()) }
     var releases by remember { mutableStateOf<List<RemoteRelease>>(emptyList()) }
     var cachedReleases by remember { mutableStateOf<List<RemoteRelease>?>(null) }
+    var hasLoadedReleaseCache by remember { mutableStateOf(false) }
     val isOnline by rememberConnectivityState(context)
     var isFetchingReleases by remember { mutableStateOf(false) }
+    var isLoadingMoreReleases by remember { mutableStateOf(false) }
+    var releaseHasMore by remember { mutableStateOf(false) }
+    var releaseNextPage by remember { mutableStateOf<Int?>(null) }
+    var releaseNextUrl by remember { mutableStateOf<String?>(null) }
+    var releaseFetchedAt by remember { mutableStateOf(0L) }
     var activeTag by remember { mutableStateOf<String?>(null) }
     var selectedReleaseForDownload by remember { mutableStateOf<RemoteRelease?>(null) }
     val serverState by ServerStateManager.serverState.collectAsState()
@@ -106,7 +114,19 @@ fun VersionsScreen() {
     var showServerRunningDeleteBlocked by remember { mutableStateOf(false) }
 
     val sheetState = rememberModalBottomSheetState()
+    val releaseListState = rememberLazyListState()
     var showReleasesSheet by remember { mutableStateOf(false) }
+
+    fun applyReleaseCache(cache: RemoteReleaseCache, updateVisibleReleases: Boolean = true) {
+        cachedReleases = cache.releases
+        if (updateVisibleReleases || releases.isEmpty()) {
+            releases = cache.releases
+        }
+        releaseHasMore = cache.hasMore
+        releaseNextPage = cache.nextPage
+        releaseNextUrl = cache.nextUrl
+        releaseFetchedAt = cache.fetchedAt
+    }
 
     val latestRelease = cachedReleases?.firstOrNull()
     val showNewVersionAlert = remember(cachedReleases, installed) {
@@ -122,17 +142,31 @@ fun VersionsScreen() {
         }
     }
 
-    LaunchedEffect(isOnline) {
+    fun loadMoreReleases() {
+        if (!isOnline || !releaseHasMore || isFetchingReleases || isLoadingMoreReleases) return
+
+        scope.launch {
+            try {
+                isLoadingMoreReleases = true
+                val result = repo.fetchNextReleasePage()
+                applyReleaseCache(result)
+            } finally {
+                isLoadingMoreReleases = false
+            }
+        }
+    }
+
+    LaunchedEffect(isOnline, hasLoadedReleaseCache) {
+        if (!hasLoadedReleaseCache) return@LaunchedEffect
+
         if (isOnline && (cachedReleases == null || repo.shouldRefreshReleaseCache())) {
-            scope.launch {
+            try {
                 isFetchingReleases = true
-                val result = repo.fetchReleases()
-                if (result.isNotEmpty()) {
-                    cachedReleases = result
-                    if (releases.isEmpty()) {
-                        releases = result
-                    }
+                val result = repo.fetchReleaseCache()
+                if (result.releases.isNotEmpty()) {
+                    applyReleaseCache(result, updateVisibleReleases = releases.isEmpty())
                 }
+            } finally {
                 isFetchingReleases = false
             }
         }
@@ -142,11 +176,31 @@ fun VersionsScreen() {
         refreshInstalled()
         abiOverride = getFridaAbiFormat(Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64")
 
-        scope.launch {
-            val cached = repo.getCachedReleases()
-            if (cached.isNotEmpty()) {
-                cachedReleases = cached
-                releases = cached
+        val cached = repo.getCachedReleaseCache()
+        if (cached != null && cached.releases.isNotEmpty()) {
+            applyReleaseCache(cached)
+        }
+        hasLoadedReleaseCache = true
+    }
+
+    LaunchedEffect(
+        showReleasesSheet,
+        isOnline,
+        releaseHasMore,
+        releaseNextPage,
+        releaseNextUrl,
+        releases.size
+    ) {
+        if (!showReleasesSheet || !isOnline || !releaseHasMore) return@LaunchedEffect
+
+        snapshotFlow {
+            val layoutInfo = releaseListState.layoutInfo
+            val firstVisible = layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: 0
+            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            firstVisible > 0 && lastVisible >= layoutInfo.totalItemsCount - 8
+        }.collect { shouldLoadMore ->
+            if (shouldLoadMore) {
+                loadMoreReleases()
             }
         }
     }
@@ -186,11 +240,22 @@ fun VersionsScreen() {
                         return@OutlinedIconButton
                     } else {
                         scope.launch {
-                            isFetchingReleases = true
-                            cachedReleases = repo.fetchReleases(forceRefresh = true)
-                            releases = cachedReleases.orEmpty()
-                            isFetchingReleases = false
-                            Toast.makeText(context, "Releases updated", Toast.LENGTH_SHORT).show()
+                            val previousFetchedAt = releaseFetchedAt
+                            try {
+                                isFetchingReleases = true
+                                val result = repo.fetchReleaseCache(forceRefresh = true)
+                                if (result.releases.isNotEmpty()) {
+                                    applyReleaseCache(result)
+                                }
+                                val message = if (result.fetchedAt != previousFetchedAt && result.releases.isNotEmpty()) {
+                                    "Releases updated"
+                                } else {
+                                    "Could not update releases"
+                                }
+                                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                            } finally {
+                                isFetchingReleases = false
+                            }
                         }
                     }
                 },
@@ -350,33 +415,37 @@ fun VersionsScreen() {
                     // 2. The Download/Fetch Button (Compact version on the right)
                     Button(
                         onClick = {
-                            if (!isOnline) {
-                                Toast.makeText(context, "Internet required", Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-
                             cachedReleases?.takeIf { it.isNotEmpty() }?.let { cached ->
                                 releases = cached
                                 showReleasesSheet = true
                                 return@Button
                             }
 
+                            if (!isOnline) {
+                                Toast.makeText(context, "Internet required", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+
                             scope.launch {
-                                isFetchingReleases = true
-                                val result = repo.fetchReleases()
-                                if (result.isNotEmpty()) {
-                                    cachedReleases = result
-                                    releases = result
-                                    showReleasesSheet = true
+                                try {
+                                    isFetchingReleases = true
+                                    val result = repo.fetchReleaseCache()
+                                    if (result.releases.isNotEmpty()) {
+                                        applyReleaseCache(result)
+                                        showReleasesSheet = true
+                                    }
+                                } finally {
+                                    isFetchingReleases = false
                                 }
-                                isFetchingReleases = false
                             }
                         },
                         modifier = Modifier
                             .height(56.dp)
                             .width(56.dp),
                         shape = RoundedCornerShape(12.dp),
-                        enabled = isOnline && !isFetchingReleases && !isDownloading,
+                        enabled = (isOnline || !cachedReleases.isNullOrEmpty()) &&
+                                !isFetchingReleases &&
+                                !isDownloading,
                         contentPadding = PaddingValues(0.dp)
                     ) {
                         if (isFetchingReleases) {
@@ -496,13 +565,13 @@ fun VersionsScreen() {
                 modifier = Modifier.padding(16.dp)
             )
             HorizontalDivider()
-            LazyColumn(modifier = Modifier.padding(bottom = 32.dp)) {
-                items(releases) { release ->
-                    val internalAbi = abiOptionsMap[abiOverride] ?: "android-arm64"
-                    val matchingAsset = release.assets.find {
-                        it.name.contains("frida-server", ignoreCase = true) &&
-                        it.name.contains(internalAbi)
-                    }
+            LazyColumn(
+                state = releaseListState,
+                modifier = Modifier.padding(bottom = 32.dp)
+            ) {
+                items(releases, key = { it.tag }) { release ->
+                    val internalAbi = abiOptionsMap[abiOverride] ?: "arm64"
+                    val matchingAsset = release.androidServerAssetFor(internalAbi)
 
                     ListItem(
                         headlineContent = { Text(release.tag, fontWeight = FontWeight.Bold) },
@@ -542,6 +611,29 @@ fun VersionsScreen() {
                             }
                         }
                     )
+                }
+
+                if (isLoadingMoreReleases) {
+                    item(key = "loading_more_releases") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 16.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "Loading older releases",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -599,11 +691,8 @@ fun VersionsScreen() {
 
     // --- Download Confirmation Dialog ---
     selectedReleaseForDownload?.let { release ->
-        val internalAbi = abiOptionsMap[abiOverride] ?: "android-arm64"
-        val matchingAsset = release.assets.find {
-            it.name.contains("frida-server", ignoreCase = true) &&
-                    it.name.contains(internalAbi)
-        }
+        val internalAbi = abiOptionsMap[abiOverride] ?: "arm64"
+        val matchingAsset = release.androidServerAssetFor(internalAbi)
         AlertDialog(
             containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp),
             onDismissRequest = { if (!isDownloading) selectedReleaseForDownload = null },
@@ -714,7 +803,7 @@ fun VersionsScreen() {
             },
             confirmButton = {
                 Button(
-                    enabled = !isDownloading,
+                    enabled = !isDownloading && isOnline,
                     onClick = {
                         scope.launch {
                             isDownloading = true
@@ -748,7 +837,13 @@ fun VersionsScreen() {
                         }
                     }
                 ) {
-                    Text(if (isDownloading) "Installing..." else "Confirm")
+                    Text(
+                        when {
+                            isDownloading -> "Installing..."
+                            !isOnline -> "Offline"
+                            else -> "Confirm"
+                        }
+                    )
                 }
             },
             dismissButton = {
