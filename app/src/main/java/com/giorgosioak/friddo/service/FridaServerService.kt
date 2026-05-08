@@ -47,12 +47,16 @@ class FridaServerService() : LifecycleService() {
         lifecycleScope.launch {
             kotlinx.coroutines.flow.combine(
                 ServerStateManager.serverState,
-                ServerStateManager.serverDetails
-            ) { state, details ->
+                ServerStateManager.serverDetails,
+                ServerStateManager.activeProcesses,
+                ServerStateManager.serverLogs
+            ) { state, details, activeProcesses, logs ->
                 NotificationHelper.buildNotification(
                     context = this@FridaServerService,
                     state = state,
-                    details = details
+                    details = details,
+                    activeProcessCount = activeProcesses.size,
+                    logs = logs
                 )
             }.collect { notification ->
                 val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager

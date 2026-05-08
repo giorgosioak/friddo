@@ -2,6 +2,7 @@ package com.giorgosioak.friddo
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -49,8 +50,16 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        const val EXTRA_NAVIGATE_TO = "navigate_to"
+        private val NAVIGATION_ROUTES = setOf("server", "logs", "versions", "settings")
+    }
+
+    private var requestedRoute by mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestedRoute = intent.navigationRouteOrNull()
 
         lifecycleScope.launch {
             VersionRepository(applicationContext).fetchReleaseCache()
@@ -128,15 +137,45 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                FriddoApp()
+                FriddoApp(
+                    requestedRoute = requestedRoute,
+                    onRouteHandled = { requestedRoute = null }
+                )
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        requestedRoute = intent.navigationRouteOrNull()
+    }
+
+    private fun Intent.navigationRouteOrNull(): String? =
+        getStringExtra(EXTRA_NAVIGATE_TO)
+            ?.takeIf { it in NAVIGATION_ROUTES }
 }
 
 @Composable
-fun FriddoApp() {
+fun FriddoApp(
+    requestedRoute: String? = null,
+    onRouteHandled: () -> Unit = {}
+) {
     val navController = rememberNavController()
+
+    LaunchedEffect(requestedRoute) {
+        val route = requestedRoute ?: return@LaunchedEffect
+        val currentRoute = navController.currentBackStackEntry?.destination?.route
+        if (currentRoute != route) {
+            navController.navigate(route) {
+                popUpTo(navController.graph.startDestinationId) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+        onRouteHandled()
+    }
+
     Scaffold(
         bottomBar = { FriddoBottomNav(navController) }
     ) { innerPadding ->
